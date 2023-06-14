@@ -134,7 +134,8 @@ class UnicornSimpleHeap(object):
                 self._uc.mem_unmap(chunk.actual_addr, chunk.total_size)
                 self._chunks.remove(chunk)
                 return True
-        return False
+        raise Exception("Freed an object that doesn't exist. "
+                        "Maybe 'double-free' or 'invalid free' vulnerability here.")
 
     # Implements basic guard-page functionality
     def __check_mem_access(self, uc, access, address, size, value, user_data):
