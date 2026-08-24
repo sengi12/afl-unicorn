@@ -11,6 +11,11 @@ This tutorial runs the whole pipeline on a Mac (Apple Silicon included):
 
 It should take about 15 minutes the first time (most of it the one-time setup).
 
+> **See also:** [INSTALL_MACOS.md](INSTALL_MACOS.md) is the detailed setup guide
+> (expands Step 1, with a full troubleshooting table). An illustrated version of
+> this walkthrough with screenshots lives in the plugin repo:
+> [ghidra-aflcov/WALKTHROUGH.md](https://github.com/sengi12/ghidra-aflcov/blob/master/WALKTHROUGH.md).
+
 ## What you need
 
 - **AFL++** installed (`afl-fuzz`, and its `unicorn_mode/unicornafl` tree built).
