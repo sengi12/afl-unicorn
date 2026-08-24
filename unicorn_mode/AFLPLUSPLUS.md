@@ -88,13 +88,48 @@ afl-showmap -U -m none -o /tmp/map -- python simple_test_harness_aflpp.py ./samp
 and saved a crash. Throughput was ~150 exec/s — the expected macOS penalty;
 Linux is considerably faster.
 
-## Coverage visualization (unchanged, works anywhere)
+## Persistent mode
 
-To see a path in Ghidra, record it with the same harness and load it in
-ghidra-aflcov:
+`-p N` enables AFL++ persistent mode: unicornafl runs N inputs per fork,
+snapshotting the emulator state before the first and restoring it before each
+subsequent one. It is a large throughput win (it amortizes the fork/exec cost
+that hurts most on macOS):
+
+```sh
+afl-fuzz -U -m none -i ./sample_inputs -o ./output -- \
+    python simple_test_harness_aflpp.py -p 1000 @@
+```
+
+Persistent mode suits targets with a re-entrant loop point. The trivial
+single-shot `simple_target` is not a natural fit (AFL++ warns that the loop
+address is not consistently reached); the default `-p 1` is the reliable path
+for it. Use persistent mode on targets whose harness re-enters a request loop.
+
+## Coverage visualization (works anywhere)
+
+Record one input's path and load it in ghidra-aflcov:
 
 ```sh
 python simple_test_harness_aflpp.py --coverage run.drcov ./sample_inputs/sample1.bin
 ```
 
-See [COVERAGE.md](COVERAGE.md) for the drcov workflow.
+## Crash triage with a coverage diff
+
+To see what a crash did that the corpus never did, build a baseline from the
+queue and diff a crash against it. `--coverage-dir` replays a whole directory
+and writes per-input drcov plus a merged `_baseline.drcov`:
+
+```sh
+# after an afl-fuzz run into ./output
+python simple_test_harness_aflpp.py --coverage-dir output/default/queue   --coverage-out cov/queue
+python simple_test_harness_aflpp.py --coverage-dir output/default/crashes --coverage-out cov/crashes
+```
+
+Then in Ghidra (ghidra-aflcov):
+
+1. **Baseline…** → `cov/queue/_baseline.drcov` (the corpus, painted green).
+2. **Diff…** → a crash file, e.g. `cov/crashes/id:000000….drcov`.
+
+Blocks the crash reached that the corpus did not are painted orange-red, and the
+diff table ranks functions by those "crash-only" blocks - the code path unique
+to the crash. See [COVERAGE.md](COVERAGE.md) for the drcov format details.

@@ -48,9 +48,10 @@ from unicorn.mips_const import *
 # drcov coverage helper (for --coverage replay).
 sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'helper_scripts'))
 try:
-    from drcov import BlockCoverage
+    from drcov import BlockCoverage, DrcovWriter
 except ImportError:
     BlockCoverage = None
+    DrcovWriter = None
 
 # Path to the binary to emulate
 BINARY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'simple_target.bin')
@@ -103,8 +104,15 @@ def build_engine():
     return uc
 
 
-def run_fuzz(uc, input_file):
-    """Hand control to AFL++ via unicornafl. Returns only when fuzzing ends."""
+def run_fuzz(uc, input_file, persistent_iters=1):
+    """Hand control to AFL++ via unicornafl. Returns only when fuzzing ends.
+
+    With persistent_iters > 1, unicornafl runs that many inputs per fork - it
+    snapshots the emulator state before the first iteration and restores it
+    before each subsequent one, so the callback only has to place the new input.
+    Persistent mode is a large throughput win because it amortizes the fork/exec
+    cost (which matters most on macOS).
+    """
     def place_input_callback(uc, input, persistent_round, data):
         # Reject over-long inputs so AFL treats them as uninteresting.
         if len(input) > DATA_SIZE_MAX:
@@ -116,7 +124,8 @@ def run_fuzz(uc, input_file):
     try:
         uc.afl_fuzz(input_file=input_file,
                     place_input_callback=place_input_callback,
-                    exits=[END_ADDRESS])
+                    exits=[END_ADDRESS],
+                    persistent_iters=persistent_iters)
     except UcAflError as e:
         # Raised when there is no AFL fork server around (e.g. run directly, or
         # under afl-showmap): unicornafl did one emulation and has nothing to
@@ -128,40 +137,103 @@ def run_fuzz(uc, input_file):
         raise
 
 
+def _emulate_one(uc, data, cov):
+    """Feed one input and emulate once, recording coverage into cov."""
+    uc.hook_add(UC_HOOK_BLOCK, cov.hook)
+    uc.mem_write(DATA_ADDRESS, data)
+    try:
+        uc.emu_start(START_ADDRESS, END_ADDRESS, timeout=0, count=0)
+    except UcError:
+        # A crashing input still produced the coverage we care about.
+        pass
+
+
 def run_coverage(uc, input_file, coverage_file):
     """Run one input on stock Unicorn and write drcov coverage for a disassembler."""
     if BlockCoverage is None:
         print("ERROR: drcov.py not found; cannot record coverage")
         return 1
 
-    cov = BlockCoverage(base=CODE_ADDRESS, end=CODE_ADDRESS + CODE_SIZE_MAX,
-                        path="simple_target.bin")
-    uc.hook_add(UC_HOOK_BLOCK, cov.hook)
-
     with open(input_file, 'rb') as f:
         data = f.read()
     if len(data) > DATA_SIZE_MAX:
         print("Test input is too long (> {} bytes)".format(DATA_SIZE_MAX))
         return 1
-    uc.mem_write(DATA_ADDRESS, data)
 
-    try:
-        uc.emu_start(START_ADDRESS, END_ADDRESS, timeout=0, count=0)
-    except UcError as e:
-        print("Execution failed with error: {}".format(e))
-
+    cov = BlockCoverage(base=CODE_ADDRESS, end=CODE_ADDRESS + CODE_SIZE_MAX,
+                        path="simple_target.bin")
+    _emulate_one(uc, data, cov)
     cov.save(coverage_file)
     print("Wrote {} basic blocks of coverage to {}".format(len(cov.blocks), coverage_file))
     return 0
 
 
+def run_coverage_dir(in_dir, out_dir):
+    """
+    Replay every input in in_dir (e.g. an AFL++ queue/ or crashes/ directory)
+    and write one drcov file per input into out_dir, plus a merged _baseline.drcov
+    that unions them all. Point ghidra-aflcov's Baseline at the queue's merge and
+    Diff a crash's drcov against it to see the crash-unique path.
+    """
+    if BlockCoverage is None:
+        print("ERROR: drcov.py not found; cannot record coverage")
+        return 1
+    if not os.path.isdir(in_dir):
+        print("ERROR: not a directory: {}".format(in_dir))
+        return 1
+    os.makedirs(out_dir, exist_ok=True)
+
+    merged = DrcovWriter()
+    mod_id = merged.add_module("simple_target.bin", CODE_ADDRESS, CODE_ADDRESS + CODE_SIZE_MAX)
+
+    count = 0
+    for name in sorted(os.listdir(in_dir)):
+        path = os.path.join(in_dir, name)
+        if not os.path.isfile(path) or name.startswith('.'):
+            continue
+        with open(path, 'rb') as f:
+            data = f.read()
+        if len(data) > DATA_SIZE_MAX:
+            continue
+
+        # A fresh engine per input: emulation mutates memory and registers.
+        uc = build_engine()
+        cov = BlockCoverage(base=CODE_ADDRESS, end=CODE_ADDRESS + CODE_SIZE_MAX,
+                            path="simple_target.bin")
+        _emulate_one(uc, data, cov)
+        cov.save(os.path.join(out_dir, name + ".drcov"))
+        for offset, size in cov.blocks:
+            merged.add_block(mod_id, offset, size)
+        count += 1
+
+    merged.save(os.path.join(out_dir, "_baseline.drcov"))
+    print("Processed {} inputs -> {} (+ _baseline.drcov, {} unique blocks)".format(
+        count, out_dir, merged.block_count()))
+    return 0
+
+
 def main():
     parser = argparse.ArgumentParser(description="AFL++ unicornafl harness for simple_target.bin")
-    parser.add_argument('input_file', type=str, help="Path to the input testcase")
+    parser.add_argument('input_file', type=str, nargs='?', default=None,
+                        help="Path to the input testcase (required for fuzzing and --coverage)")
     parser.add_argument('-c', '--coverage', type=str, default=None, metavar="FILE",
                         help="Replay one input on stock Unicorn and write drcov coverage to FILE "
                              "(for ghidra-aflcov). Does not fuzz.")
+    parser.add_argument('--coverage-dir', type=str, default=None, metavar="INDIR",
+                        help="Replay every input in INDIR (e.g. an AFL++ queue/ or crashes/ dir) "
+                             "and write per-input drcov + a merged _baseline.drcov into --coverage-out.")
+    parser.add_argument('--coverage-out', type=str, default=None, metavar="OUTDIR",
+                        help="Output directory for --coverage-dir (default: ./coverage_out).")
+    parser.add_argument('-p', '--persistent', type=int, default=1, metavar="N",
+                        help="AFL++ persistent mode: run N inputs per fork (default 1). "
+                             "Higher values fuzz faster by amortizing fork/exec cost.")
     args = parser.parse_args()
+
+    if args.coverage_dir:
+        return run_coverage_dir(args.coverage_dir, args.coverage_out or "coverage_out")
+
+    if args.input_file is None:
+        parser.error("an input_file is required (for fuzzing or --coverage)")
 
     uc = build_engine()
 
@@ -174,7 +246,7 @@ def main():
         print("       --coverage to replay a single input for visualization.")
         return 1
 
-    run_fuzz(uc, args.input_file)
+    run_fuzz(uc, args.input_file, persistent_iters=max(1, args.persistent))
     return 0
 
 
