@@ -29,20 +29,31 @@ First, build afl as usual. This is pretty simple:
   $ cd <afl_root>
   $ make
 
-Once that completes successfully you need to build and add in the Unicorn Mode 
-features:
+Once that completes successfully you need to set up Unicorn Mode:
 
   $ cd unicorn_mode
   $ ./build_unicorn_support.sh
 
-NOTE: This script downloads the most recent Unicorn Engine stable release 
-from the Unicorn github page. If you are offline, you'll need to hack up 
-this script a little bit and supply your own copy of Unicorn's latest stable 
-release. It's not very hard, just check out the beginning of the 
-build_unicorn_support.sh script and adjust as necessary.
+This installs a stock Unicorn Engine 2.x, which ships prebuilt wheels for
+macOS (Apple Silicon and Intel) and Linux, so there is nothing to compile. On
+an externally-managed Python (PEP 668, common on modern macOS/Debian) the
+script installs into a local virtualenv and prints how to use it. It then runs
+the simple sample to confirm emulation and coverage recording work.
 
-Building Unicorn will take a little bit (~5-10 minutes). Once it completes 
-it automatically compiles a sample application and verify that it works.
+NOTE ON PLATFORMS: emulation and coverage recording (see COVERAGE.md) work
+anywhere Unicorn 2.x runs, macOS included. Driving harnesses under afl-fuzz,
+however, needs Unicorn instrumented to feed AFL's coverage bitmap, which relies
+on the Linux fork server and is Linux-only. The old instrumented-Unicorn-v1
+patches in patches/ do not apply to Unicorn 2.x; for afl-fuzz-guided fuzzing on
+Linux use AFL++'s "unicornafl":
+
+  https://github.com/AFLplusplus/AFLplusplus/tree/stable/unicorn_mode
+
+*** Visualizing coverage ***
+
+To see which basic blocks an input drove through, record a drcov file from a
+harness and load it in a disassembler. See COVERAGE.md for the full workflow
+and the companion Ghidra plugin (ghidra-aflcov).
 
 *** Fuzzing with Unicorn Mode ***
 
@@ -101,9 +112,10 @@ instruction is, nor if it is valid. This is an artifact of how the fork-server
 is started and could likely be fixed with some clever re-arranging of the
 patches applied to Unicorn.
 
-Running the build script builds Unicorn and its python bindings and installs 
-them on your system. This installation will supersede any existing Unicorn
-installation with the patched afl-unicorn version.
+Running the build script installs Unicorn 2.x (a pip package) for the current
+user, or into a local virtualenv when the system Python is externally managed.
+It no longer replaces a system Unicorn with a patched build; see the platform
+note above for afl-fuzz-guided fuzzing.
 
 Refer to the unicorn_mode/samples/arm_example/arm_tester.c for an example
 of how to do this properly! If you don't get this right, AFL will not 

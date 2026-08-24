@@ -1,10 +1,10 @@
 #!/bin/sh
 #
-# american fuzzy lop - Unicorn-Mode build script
-# --------------------------------------
+# american fuzzy lop - Unicorn-Mode setup script
+# ----------------------------------------------
 #
 # Written by Nathan Voss <njvoss99@gmail.com>
-# 
+#
 # Adapted from code by Andrew Griffiths <agriffiths@google.com> and
 #                      Michal Zalewski <lcamtuf@google.com>
 #
@@ -16,174 +16,120 @@
 #
 #   http://www.apache.org/licenses/LICENSE-2.0
 #
-# This script downloads, patches, and builds a version of Unicorn with
-# minor tweaks to allow Unicorn-emulated binaries to be run under
-# afl-fuzz. 
+# ----------------------------------------------------------------------------
+# Unicorn 2.x setup (cross-platform: macOS and Linux).
 #
-# The modifications reside in patches/*. The standalone Unicorn library
-# will be written to /usr/lib/libunicornafl.so, and the Python bindings
-# will be installed system-wide.
+# This installs a stock Unicorn Engine 2.x, which is what the emulation and
+# coverage-recording workflow needs. Unicorn 2.x ships prebuilt wheels for
+# macOS (Apple Silicon and Intel) and Linux, so there is nothing to compile.
 #
-# You must make sure that Unicorn Engine is not already installed before
-# running this script. If it is, please uninstall it first.
+# NOTE ON AFL-GUIDED FUZZING:
+#   Driving these harnesses under afl-fuzz needs Unicorn instrumented to feed
+#   AFL's coverage bitmap. That mechanism relies on the Linux fork server and
+#   is Linux-only. The instrumented-Unicorn-v1 patches this script used to build
+#   do not apply to Unicorn 2.x; the modern replacement is AFL++'s "unicornafl"
+#   (https://github.com/AFLplusplus/AFLplusplus/tree/stable/unicorn_mode) on
+#   Linux. On macOS you can emulate and record coverage, but not run afl-fuzz.
+#
+# The coverage workflow (drcov -> ghidra-aflcov / Lighthouse / Dragondance) is
+# documented in COVERAGE.md and works anywhere Unicorn 2.x runs.
 
-UNICORN_URL="https://github.com/unicorn-engine/unicorn.git"
+UNICORN_SPEC="unicorn>=2.0.0"
+VENVDIR="$(cd "$(dirname "$0")" && pwd)/unicorn2-venv"
 
 echo "================================================="
-echo "Unicorn-AFL build script"
+echo "afl-unicorn: Unicorn 2.x setup"
 echo "================================================="
 echo
 
-echo "[*] Performing basic sanity checks..."
+OS="$(uname -s)"
+echo "[*] Host OS: $OS"
 
-if [ "$(id -u)" != "0" ]; then
-
-   echo "[-] Error: This script must be run as root/sudo" 
-   exit 1
-
-fi
-
-if [ ! "`uname -s`" = "Linux" ]; then
-
-  echo "[-] Error: Unicorn instrumentation is supported only on Linux."
-  exit 1
-
-fi
-
-ldconfig -p | grep libunicorn > /dev/null;
-if [ $? -eq 0 ]; then
-
-  echo -n "[?] Unicorn Engine appears to already be installed on the system. Continuing will overwrite the existing installation. Continue (y/n)?"
-  
-  read answer
-  if ! echo "$answer" | grep -iq "^y" ;then
-
-    exit 1
-
+# Locate a Python 3 interpreter.
+PY=""
+for cand in python3 python; do
+  if command -v "$cand" >/dev/null 2>&1; then
+    if "$cand" -c 'import sys; sys.exit(0 if sys.version_info[0] == 3 else 1)' 2>/dev/null; then
+      PY="$cand"
+      break
+    fi
   fi
-
-fi
-
-if [ ! -f "patches/afl-unicorn-cpu-inl.h" -o ! -f "../config.h" ]; then
-
-  echo "[-] Error: key files not found - wrong working directory?"
-  exit 1
-
-fi
-
-if [ ! -f "../afl-showmap" ]; then
-
-  echo "[-] Error: ../afl-showmap not found - compile AFL first!"
-  exit 1
-
-fi
-
-for i in wget python automake autoconf sha384sum; do
-
-  T=`which "$i" 2>/dev/null`
-
-  if [ "$T" = "" ]; then
-
-    echo "[-] Error: '$i' not found. Run 'sudo apt-get install $i'."
-    exit 1
-
-  fi
-
 done
 
-if ! python -c "import sys; import setuptools; print(setuptools.version.__version__)" &> /dev/null; then
-
-  echo "[-] Error: Python setup-tools not found. Run 'sudo apt-get install python-setuptools'."
+if [ -z "$PY" ]; then
+  echo "[-] Error: Python 3 not found. Install it first (macOS: 'brew install python')."
   exit 1
-
 fi
+echo "[+] Using Python: $($PY --version 2>&1) at $(command -v $PY)"
 
-if echo "$CC" | grep -qF /afl-; then
+# Decide where to install Unicorn.
+#   - Inside an active virtualenv: install there.
+#   - Otherwise try a --user install; if the environment is externally managed
+#     (PEP 668, common on modern macOS/Debian), fall back to a local venv.
+RUN_PY="$PY"
+ERRLOG="$(mktemp 2>/dev/null || echo /tmp/uc2_pip_err)"
 
-  echo "[-] Error: Do not use afl-gcc or afl-clang to compile this tool."
-  exit 1
+install_into_local_venv() {
+  echo "[*] Creating a local virtualenv at: $VENVDIR"
+  "$PY" -m venv "$VENVDIR" || { echo "[-] Error: could not create venv."; exit 1; }
+  "$VENVDIR/bin/python" -m pip install --quiet --upgrade pip >/dev/null 2>&1
+  "$VENVDIR/bin/python" -m pip install "$UNICORN_SPEC" || { echo "[-] Error: pip install failed in venv."; exit 1; }
+  RUN_PY="$VENVDIR/bin/python"
+  USED_VENV=1
+}
 
-fi
-
-echo "[+] All checks passed!"
-echo "[*] Checking if GIT is installed ..."
-
-git --version 2>&1 >/dev/null # improvement by tripleee
-GIT_IS_AVAILABLE=$?
-if [ $GIT_IS_AVAILABLE -ne 0 ]; then 
-  
-  echo "[-] Error: Please install git using 'sudo apt-get install git'"
-  exit 1
-
-fi
-
-echo "[*] Downloading Unicorn from github..."
-rm -r "unicorn"
-git clone "$UNICORN_URL" --branch v1 || exit 1
-
-echo "[*] Applying patches..."
-
-# Patches were updated!
-patch -p0 <patches/config.diff || exit 1
-patch -p0 <patches/cpu-exec.diff || exit 1
-patch -p0 <patches/translate-all.diff || exit 1
-
-echo "[+] Patching done."
-
-echo "[*] Configuring Unicorn build..."
-
-cd "unicorn" || exit 1
-
-# No custom config necessary at the moment. Consider optimizations.
-#CFLAGS="-O3" ./configure || exit 1
-
-echo "[+] Configuration complete."
-
-echo "[*] Attempting to build Unicorn (fingers crossed!)..."
-
-make || exit 1
-
-echo "[+] Build process successful!"
-
-echo "[*] Installing patched unicorn binaries to local system..."
-
-make install || exit 1
-sudo rm -f -r unicorn/
-
-echo "[+] Unicorn installed successfully."
-
-echo "[*] Building Unicorn python bindings..."
-
-cd bindings/python || exit 1
-python setup.py install || exit 1
-cd ../../ || exit 1
-
-echo "[+] Unicorn Python bindings installed successfully"
-
-# Compile the sample, run it, verify that it works!
-echo "[*] Testing unicorn-mode functionality by running a sample test harness under afl-unicorn"
-
-cd ../samples/simple || exit 1
-
-# Run afl-showmap on the sample application. If anything comes out then it must have worked!
-unset AFL_INST_RATIO
-echo 0 | ../../../afl-showmap -U -m none -q -o .test-instr0 -- python simple_test_harness.py ./sample_inputs/sample1.bin || exit 1
-
-if [ -s .test-instr0 ]
-then
-  
-  echo "[+] Instrumentation tests passed. "
-  echo "[+] All set, you can now use Unicorn mode (-U) in afl-fuzz!"
-  RETVAL=0
-
+if [ -n "$VIRTUAL_ENV" ]; then
+  echo "[*] Active virtualenv detected: $VIRTUAL_ENV"
+  "$PY" -m pip install "$UNICORN_SPEC" || { echo "[-] Error: pip install failed."; exit 1; }
 else
+  echo "[*] Installing Unicorn 2.x ($UNICORN_SPEC)..."
+  if "$PY" -m pip install --user "$UNICORN_SPEC" 2>"$ERRLOG"; then
+    :
+  elif grep -qi "externally-managed" "$ERRLOG"; then
+    echo "[!] System Python is externally managed (PEP 668); using a local venv instead."
+    install_into_local_venv
+  else
+    echo "[-] pip install failed:"
+    cat "$ERRLOG"
+    exit 1
+  fi
+fi
+rm -f "$ERRLOG"
 
-  echo "[-] Error: Unicorn mode doesn't seem to work!"
-  RETVAL=1
-
+echo
+echo "[*] Verifying the installation..."
+if ! "$RUN_PY" -c "import unicorn; print('[+] Unicorn', unicorn.__version__, 'ready')"; then
+  echo "[-] Error: Unicorn import failed after install."
+  exit 1
 fi
 
-rm -f .test-instr0
-rm -f -r unicorn
+# Sanity-check that the sample harness emulates and records coverage.
+HERE="$(cd "$(dirname "$0")" && pwd)"
+SAMPLE="$HERE/samples/simple"
+if [ -f "$SAMPLE/simple_test_harness.py" ] && [ -f "$SAMPLE/sample_inputs/sample1.bin" ]; then
+  echo "[*] Running the simple sample to confirm emulation + coverage..."
+  TMPCOV="$(mktemp 2>/dev/null || echo /tmp/uc2_sample.drcov)"
+  if ( cd "$SAMPLE" && "$RUN_PY" simple_test_harness.py --coverage "$TMPCOV" ./sample_inputs/sample1.bin >/dev/null 2>&1 ) && [ -s "$TMPCOV" ]; then
+    echo "[+] Sample emulated and wrote coverage successfully."
+    rm -f "$TMPCOV"
+  else
+    echo "[!] Warning: sample run did not produce coverage. Unicorn is installed, but"
+    echo "    check the harness manually (capstone is optional; only needed for -d)."
+  fi
+fi
 
-exit $RETVAL
+echo
+echo "[+] Done."
+if [ -n "$USED_VENV" ]; then
+  echo
+  echo "    Unicorn was installed into a local virtualenv. Use it with:"
+  echo "        source \"$VENVDIR/bin/activate\""
+  echo "    or invoke harnesses as:"
+  echo "        \"$VENVDIR/bin/python\" your_harness.py ..."
+fi
+echo
+echo "    Next: see COVERAGE.md to record a drcov file and view it in Ghidra."
+if [ "$OS" = "Linux" ]; then
+  echo "    For afl-fuzz-driven fuzzing on Linux, use AFL++'s unicornafl (see header)."
+fi
+exit 0

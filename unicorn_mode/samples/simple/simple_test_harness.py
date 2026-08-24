@@ -16,9 +16,18 @@
 import argparse
 import os
 import signal
+import sys
 
 from unicorn import *
 from unicorn.mips_const import *
+
+# drcov coverage helper lives with the other helper scripts. Optional: the
+# harness fuzzes fine without it, and only needs it when --coverage is used.
+sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'helper_scripts'))
+try:
+    from drcov import BlockCoverage
+except ImportError:
+    BlockCoverage = None
 
 # Path to the file containing the binary to emulate
 BINARY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'simple_target.bin')
@@ -81,6 +90,9 @@ def main():
     parser = argparse.ArgumentParser(description="Test harness for simple_target.bin")
     parser.add_argument('input_file', type=str, help="Path to the file containing the mutated input to load")
     parser.add_argument('-d', '--debug', default=False, action="store_true", help="Enables debug tracing")
+    parser.add_argument('-c', '--coverage', type=str, default=None, metavar="FILE",
+                        help="Record basic-block coverage to a drcov FILE (for ghidra-aflcov, "
+                             "Lighthouse, Dragondance). Use on a single input, not while fuzzing.")
     args = parser.parse_args()
 
     # Instantiate a MIPS32 big endian Unicorn Engine instance
@@ -91,6 +103,18 @@ def main():
         uc.hook_add(UC_HOOK_CODE, unicorn_debug_instruction)
         uc.hook_add(UC_HOOK_MEM_WRITE | UC_HOOK_MEM_READ, unicorn_debug_mem_access)
         uc.hook_add(UC_HOOK_MEM_WRITE_UNMAPPED | UC_HOOK_MEM_READ_INVALID, unicorn_debug_mem_invalid_access)
+
+    # Coverage recording. The code under test is mapped at CODE_ADDRESS, so that
+    # is the module base; offsets are stored relative to it. In a disassembler,
+    # set the program's image base to CODE_ADDRESS (or rebase) so blocks align.
+    coverage = None
+    if args.coverage:
+        if BlockCoverage is None:
+            print("WARNING: drcov.py not found; cannot record coverage")
+        else:
+            coverage = BlockCoverage(base=CODE_ADDRESS, end=CODE_ADDRESS + CODE_SIZE_MAX,
+                                     path="simple_target.bin")
+            uc.hook_add(UC_HOOK_BLOCK, coverage.hook)
 
     #---------------------------------------------------
     # Load the binary to emulate and map it into memory
@@ -163,6 +187,10 @@ def main():
     except UcError as e:
         print("Execution failed with error: {}".format(e))
         force_crash(e)
+
+    if coverage is not None:
+        coverage.save(args.coverage)
+        print("Wrote {} basic blocks of coverage to {}".format(len(coverage.blocks), args.coverage))
 
     print("Done.")
 

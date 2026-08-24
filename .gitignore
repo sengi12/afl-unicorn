@@ -1,0 +1,10 @@
+# Python
+__pycache__/
+*.pyc
+
+# Local Unicorn 2.x virtualenv created by build_unicorn_support.sh
+unicorn_mode/unicorn2-venv/
+
+# QEMU build artifacts (downloaded/extracted locally)
+qemu_mode/qemu-*.tar.xz
+qemu_mode/qemu-2.*/
