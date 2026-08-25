@@ -56,7 +56,19 @@ export AFL="$HOME/Applications/AFLplusplus"   # or "$(brew --prefix)/opt/afl++/s
 ## Part 2 — build unicornafl
 
 `unicornafl` is not usable from PyPI (its package is not self-contained). Build
-it from AFL++'s own tree. It needs `automake`, which macOS does not ship:
+it from AFL++'s own tree.
+
+> **AFL++ version note.** The steps in this part were verified on **AFL++ 4.05c**,
+> which ships `build_unicorn_support.sh` and a hand-installed pair of Python
+> bindings. **AFL++ 5.x renamed the script to `build_unicorn_support.py`** and
+> rewrote unicornafl in Rust: it needs `rust`, `cmake`, and `ninja`
+> (`brew install rust cmake ninja`), and it creates its own virtualenv at
+> `$AFL/unicorn_mode/.venv` with `unicornafl` already installed — so Parts 3–4
+> below collapse into "use that interpreter." See
+> [AFLPLUSPLUS.md](AFLPLUSPLUS.md) for the 5.x flow. The rest of this file
+> applies as written to 4.x.
+
+It needs `automake`, which macOS does not ship:
 
 ```sh
 brew install automake

@@ -242,7 +242,7 @@ def main():
 
     if not HAVE_AFLPP:
         print("ERROR: unicornafl is not installed, so fuzzing is unavailable on this host.")
-        print("       Install AFL++ unicorn_mode (build_unicorn_support.sh), or use")
+        print("       Build it from AFL++ unicorn_mode (build_unicorn_support.py), or use")
         print("       --coverage to replay a single input for visualization.")
         return 1
 

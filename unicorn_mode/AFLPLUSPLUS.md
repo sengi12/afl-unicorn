@@ -20,46 +20,67 @@ still supports `--coverage` to write a drcov file for the ghidra-aflcov plugin.
 
 ## Setup
 
-You need AFL++ and its `unicornafl` bindings. On Linux the AFL++ package or its
-`unicorn_mode/build_unicorn_support.sh` sets this up. On macOS the steps below
-are what actually worked (Apple Silicon, AFL++ 4.05c):
+You need AFL++ and its `unicornafl` bindings. **Build `unicornafl` from AFL++'s
+source tree — do not `pip install unicornafl` from PyPI.** The PyPI package
+imports fine but its bundled native library does not implement the fork-server
+handshake that current AFL++ expects: under `afl-showmap -U` / `afl-fuzz -U` the
+child segfaults and captures **0 coverage tuples**. The source build produces a
+`unicornafl` whose ABI matches your AFL++ and captures coverage correctly.
 
-1. **Build unicornafl** with AFL++'s own script (PyPI's `unicornafl` is not
-   self-contained and fails to build):
+Modern `unicornafl` (2.1+) is a Rust/`maturin` build, so the setup differs from
+the old v1 flow. The steps below are verified on both Linux (Kali rolling,
+AFL++ 5.02c, Python 3.14) and macOS (Apple Silicon, AFL++ 4.05c).
+
+1. **Install build prerequisites.** The build compiles Unicorn (CMake + Ninja)
+   and the Rust bindings (cargo):
 
    ```sh
-   # one-time build dependency on macOS
-   brew install automake
+   # Debian / Kali / Ubuntu
+   sudo apt-get install -y afl++ build-essential cargo rustc cmake ninja-build \
+       python3-dev python3-venv git
 
-   cd /path/to/AFLplusplus/unicorn_mode
-   ./build_unicorn_support.sh     # clones + builds unicornafl (~a few minutes)
+   # macOS (Homebrew)
+   brew install afl++ rust cmake ninja automake
    ```
 
-2. **Use Python 3.11 or 3.12 — not 3.13/3.14.** unicornafl 2.0.x's Python glue
-   imports `pkg_resources` and `distutils.sysconfig`, both removed from the
-   modern stdlib. A 3.12 virtualenv avoids the problem:
+2. **Build unicornafl** with AFL++'s own script. Note the name: it is now a
+   Python script (`build_unicorn_support.py`), not the old `.sh`. AFL++ must be
+   compiled first (the script checks for it):
 
    ```sh
-   python3.12 -m venv aflpp-venv
-   . aflpp-venv/bin/activate
+   cd /path/to/AFLplusplus
+   make            # or use the distro afl++ package's prebuilt binaries
+   cd unicorn_mode
+   python3 build_unicorn_support.py    # builds Unicorn + unicornafl (~a few minutes)
+   ```
+
+   The script installs `unicornafl` into a virtualenv it creates at
+   `unicorn_mode/.venv`. Use that interpreter to run the harnesses, e.g.
+   `/path/to/AFLplusplus/unicorn_mode/.venv/bin/python`.
+
+3. **If you use your own virtualenv, pin `setuptools<81`.** unicornafl's Python
+   glue still imports `pkg_resources`, which setuptools removed in 81. Python
+   3.13/3.14 venvs ship no `pkg_resources` at all, so add it back:
+
+   ```sh
    pip install 'setuptools<81'    # provides pkg_resources
    ```
 
-3. **Install the matching pair** (the instrumented Unicorn that unicornafl was
-   built against, then unicornafl without letting pip pull stock Unicorn):
-
-   ```sh
-   UCAFL=/path/to/AFLplusplus/unicorn_mode/unicornafl
-   pip install --force-reinstall "$UCAFL/unicorn/bindings/python"      # unicorn 2.0.1 (instrumented)
-   pip install --no-deps --force-reinstall "$UCAFL/bindings/python"    # unicornafl
-   ```
-
-   Verify:
+   Verify the bindings load and match your Unicorn:
 
    ```sh
    python -c "import unicornafl; unicornafl.monkeypatch(); \
               from unicorn import Uc, UC_ARCH_MIPS, UC_MODE_MIPS32, UC_MODE_BIG_ENDIAN; \
               print('afl_fuzz:', hasattr(Uc(UC_ARCH_MIPS, UC_MODE_MIPS32+UC_MODE_BIG_ENDIAN),'afl_fuzz'))"
+   ```
+
+   Then confirm instrumentation actually feeds the bitmap (this is the check the
+   PyPI package fails):
+
+   ```sh
+   afl-showmap -U -m none -o /tmp/map -- python simple_test_harness_aflpp.py ./sample_inputs/sample1.bin
+   # Expect "Captured N tuples" with N > 0. "Captured 0 tuples" + a signal-11
+   # abort means a mismatched/PyPI unicornafl - rebuild from source.
    ```
 
 ## Fuzzing
@@ -80,13 +101,18 @@ afl-showmap -U -m none -o /tmp/map -- python simple_test_harness_aflpp.py ./samp
 # "Captured N tuples" means instrumentation is feeding the AFL bitmap.
 ```
 
-## Verified result (macOS ARM, AFL++ 4.05c)
+## Verified results
 
-`afl-showmap -U` captured 6 coverage tuples from the MIPS sample, and a short
-`afl-fuzz -U` session brought up the fork server ("Using SHARED MEMORY FUZZING",
-`target_mode: unicornshmem_testcase`), fuzzed the seeds, found new corpus items
-and saved a crash. Throughput was ~150 exec/s — the expected macOS penalty;
-Linux is considerably faster.
+- **Linux (Kali rolling, AFL++ 5.02c, Python 3.14):** source-built unicornafl,
+  `afl-showmap -U` captured 5 tuples from the MIPS sample and a short `afl-fuzz -U`
+  session brought up the fork server, found a new corpus item and saved a crash.
+  The PyPI `unicornafl` on the same host captured 0 tuples and segfaulted — hence
+  the build-from-source requirement above.
+- **macOS (Apple Silicon, AFL++ 4.05c):** `afl-showmap -U` captured 6 tuples, and
+  a short `afl-fuzz -U` session brought up the fork server ("Using SHARED MEMORY
+  FUZZING", `target_mode: unicornshmem_testcase`), fuzzed the seeds, found new
+  corpus items and saved a crash. Throughput was ~150 exec/s — the expected macOS
+  fork/exec penalty; Linux is considerably faster.
 
 ## Persistent mode
 

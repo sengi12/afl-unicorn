@@ -1,0 +1,5 @@
+# environment variables:
+AFL_NO_AFFINITY=1
+AFL_SKIP_CPUFREQ=1
+# command line:
+'/Users/sengi/Applications/AFLplusplus/afl-fuzz' '-U' '-m' 'none' '-t' '5000' '-i' './sample_inputs' '-o' './output' '--' 'python' 'simple_test_harness_aflpp.py' '@@'

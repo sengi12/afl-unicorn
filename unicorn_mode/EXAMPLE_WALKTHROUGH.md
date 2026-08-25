@@ -55,6 +55,12 @@ cd "$AFL/unicorn_mode"
 ./build_unicorn_support.sh            # clones + builds unicornafl (a few minutes)
 ```
 
+> This `.sh` flow is AFL++ 4.x. **AFL++ 5.x** renamed the script to
+> `build_unicorn_support.py` (Rust build; needs `rust`, `cmake`, `ninja`) and it
+> auto-creates a ready-to-use venv at `$AFL/unicorn_mode/.venv`, so you can skip
+> the manual venv/bindings steps below and just use that interpreter. Full 5.x
+> setup is in [AFLPLUSPLUS.md](AFLPLUSPLUS.md).
+
 Then create a virtualenv and install the matching pair into it:
 
 ```sh
