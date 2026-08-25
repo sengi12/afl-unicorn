@@ -24,7 +24,7 @@
 
 
 VERSION="2.10.0"
-QEMU_URL="http://download.qemu-project.org/qemu-${VERSION}.tar.xz"
+QEMU_URL="https://download.qemu.org/qemu-${VERSION}.tar.xz"
 QEMU_SHA384="68216c935487bc8c0596ac309e1e3ee75c2c4ce898aab796faa321db5740609ced365fedda025678d072d09ac8928105"
 
 echo "================================================="
@@ -141,6 +141,7 @@ echo "[+] Patching done."
 
 CFLAGS="-O3 -ggdb" ./configure --disable-system \
   --enable-linux-user --disable-gtk --disable-sdl --disable-vnc \
+  --python="$(command -v python2 || command -v python2.7)" \
   --target-list="${CPU_TARGET}-linux-user" --enable-pie --enable-kvm || exit 1
 
 echo "[+] Configuration complete."
